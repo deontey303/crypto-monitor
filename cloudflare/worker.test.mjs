@@ -108,3 +108,40 @@ test('overdue outcome is marked missing when its asset has no quote',async()=>{
     assert.equal(sql.prepare(`SELECT status FROM shadow_outcomes WHERE horizon_minutes=60`).get().status,'pending');
   }finally{globalThis.fetch=original;sql.close();}
 });
+
+// Catches delivery/data coupling and duplicate sends: a Telegram outage must not
+// roll back the signal, and the durable outbox must retry it on the next tick.
+test('Telegram outbox retries without duplicating shadow signals',async()=>{
+  const {sql,DB}=database();
+  const original=globalThis.fetch;
+  let price=100, telegramCalls=0;
+  globalThis.fetch=async(url,options)=>{
+    if (String(url).startsWith('https://api.telegram.org/')) {
+      telegramCalls++;
+      assert.equal(JSON.parse(options.body).chat_id,'42');
+      if (telegramCalls===1) return new Response('unavailable',{status:503});
+      return Response.json({ok:true,result:{message_id:telegramCalls}});
+    }
+    return Response.json({status:{credit_count:1,error_code:0},data:[
+      {id:1,symbol:'BTC',quote:{USD:{price}}}
+    ]});
+  };
+  const env={DB,CMC_API_KEY:'test-only',CMC_MONTHLY_BUDGET:'100',CMC_CALL_RESERVE:'5',
+    SHADOW_ROUND_TRIP_COST_BPS:'20',TELEGRAM_BOT_TOKEN:'secret-test-token',TELEGRAM_CHAT_ID:'42'};
+  const start=Date.UTC(2026,8,13,0,2);
+  try{
+    await run('cmc',env,start);
+    price=120;
+    await run('cmc',env,start+15*minute);
+    assert.equal(sql.prepare('SELECT count(*) AS n FROM shadow_signals').get().n,1);
+    assert.deepEqual({...sql.prepare('SELECT status,attempts FROM notification_outbox').get()},
+      {status:'pending',attempts:1});
+
+    price=132;
+    await run('cmc',env,start+30*minute);
+    assert.equal(telegramCalls,3);
+    assert.equal(sql.prepare('SELECT count(*) AS n FROM notification_outbox').get().n,2);
+    assert.equal(sql.prepare("SELECT count(*) AS n FROM notification_outbox WHERE status='sent'").get().n,2);
+    assert.equal(sql.prepare("SELECT attempts FROM notification_outbox WHERE kind='signal'").get().attempts,2);
+  }finally{globalThis.fetch=original;sql.close();}
+});
