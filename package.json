@@ -1,0 +1,1 @@
+{"name":"crypto-monitor","private":true,"type":"module","scripts":{"test":"node --test cloudflare/worker.test.mjs railway/*.test.mjs","start":"node railway/server.mjs","run:dex":"node railway/runner.mjs dex","run:cmc":"node railway/runner.mjs cmc"},"dependencies":{"pg":"^8.16.3"}}
