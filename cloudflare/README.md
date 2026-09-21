@@ -12,7 +12,8 @@
 - Каждый алерт до появления результата фиксируется как неизменяемый теневой сигнал `momentum-v1`: рост означает long, падение — short. Конкурирующая модель `contrarian-v1` получает противоположное направление на той же точке входа.
 - Для обоих направлений считаются forward-результаты через 15, 60 и 240 минут. По умолчанию из результата вычитается 20 bps полных транзакционных расходов. Значение сохраняется в самом сигнале, поэтому последующая смена конфигурации не переписывает историю.
 - Берётся первая доступная котировка на или после горизонта. Если котировки нет ещё 30 минут, результат получает явный статус `missing`; такие случаи видны в scorecard и не исчезают из выборки.
-- Публичного HTTP API нет. Telegram, X, AI-анализ и торговля пока не подключены.
+- Telegram отправляет новые shadow-сигналы и результаты 15/60/240 минут через durable outbox. Сбой Telegram не откатывает сигнал: pending-сообщения повторяются на следующем Cron. X, AI-анализ и торговля не подключены.
+- Публичного HTTP API нет.
 
 ## Запуск из терминала своего компьютера
 
@@ -33,10 +34,12 @@ npx wrangler@4 d1 execute crypto-monitor --remote --file=schema.sql
 npx wrangler@4 deploy --dry-run
 npx wrangler@4 deploy
 npx wrangler@4 secret put CMC_API_KEY
+npx wrangler@4 secret put TELEGRAM_BOT_TOKEN
+npx wrangler@4 secret put TELEGRAM_CHAT_ID
 npx wrangler@4 tail
 ```
 
-Последняя команда ввода секрета запрашивает его интерактивно. До добавления секрета CMC пропускает сбор с ошибкой `cmc_secret_missing`; DEX продолжает работать. Распространение Cron может занять до 15 минут.
+Команды ввода секретов запрашивают значения интерактивно. Не вставляйте bot token в чат, GitHub или `wrangler.toml`. `TELEGRAM_CHAT_ID` — числовой ID личного чата или канала, в который бот уже добавлен и имеет право писать. До добавления CMC-секрета CMC пропускает сбор с ошибкой `cmc_secret_missing`; DEX продолжает работать. Без Telegram-секретов уведомления остаются в outbox и не отправляются. Распространение Cron может занять до 15 минут.
 
 Проверьте успешные запуски обоих источников, число котировок, ошибки и CPU Time в Cloudflare. На Free лимит CPU — 10 ms на запуск: его соблюдение требуется проверить на реальных ответах API. При превышении уменьшите CMC limit до 100 и/или watchlist; платный тариф автоматически не включать. Увеличение интервала само по себе не уменьшает CPU одного запуска.
 
@@ -49,6 +52,7 @@ npx wrangler@4 d1 execute crypto-monitor --remote --command="SELECT source,ts,da
 npx wrangler@4 d1 execute crypto-monitor --remote --command="SELECT * FROM shadow_signals ORDER BY created_at DESC LIMIT 5"
 npx wrangler@4 d1 execute crypto-monitor --remote --command="SELECT * FROM shadow_outcomes ORDER BY due_at DESC LIMIT 15"
 npx wrangler@4 d1 execute crypto-monitor --remote --command="SELECT * FROM shadow_scorecard ORDER BY horizon_minutes"
+npx wrangler@4 d1 execute crypto-monitor --remote --command="SELECT kind,status,attempts,created_at,sent_at FROM notification_outbox ORDER BY created_at DESC LIMIT 20"
 ```
 
 ## Контракт теневого эксперимента
@@ -58,6 +62,8 @@ npx wrangler@4 d1 execute crypto-monitor --remote --command="SELECT * FROM shado
 Доходность выражена в базисных пунктах от условного линейного бессрочного фьючерса без плеча. Прототип учитывает заданные полные транзакционные расходы, но пока не моделирует funding, spread, price impact, ликвидации и фактическую исполнимость указанной цены. Поэтому положительный scorecard — основание для следующего paper-trading теста, а не доказательство доступной прибыли.
 
 `shadow_signals` защищена от UPDATE/DELETE SQL-триггерами; завершённые и missing outcomes также неизменяемы. Это защищает от случайного переписывания через приложение, но не является криптографическим доказательством против администратора D1.
+
+Telegram — канал наблюдения, а не команда открыть сделку. Delivery использует at-least-once семантику: устойчивый `notification_id` предотвращает повторное создание сообщения, но редкий дубль возможен, если Telegram принял запрос, а Worker завершился до записи `sent` в D1.
 
 Остановка: удалите оба Cron Trigger в настройках Worker. Для изменения периодичности обновите конфигурацию и соответствие `event.cron` в обработчике.
 
