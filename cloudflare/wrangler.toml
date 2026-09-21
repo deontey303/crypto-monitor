@@ -9,9 +9,9 @@ crons = ["*/5 * * * *", "2,17,32,47 * * * *"]
 [vars]
 CMC_MONTHLY_BUDGET = "14000"
 CMC_CALL_RESERVE = "5"
+SHADOW_ROUND_TRIP_COST_BPS = "20"
 
 [[d1_databases]]
 binding = "DB"
 database_name = "crypto-monitor"
 database_id = "REPLACE_WITH_D1_DATABASE_ID"
-
