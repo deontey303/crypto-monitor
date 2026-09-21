@@ -1,5 +1,6 @@
 // No credentials in this file. CMC_API_KEY is a Worker secret.
 import watchlist from '../watchlist.json' with { type: 'json' };
+import { claimHash } from '../product/claim-hash.mjs';
 const MIN = 60000;
 const positive = x => Number.isFinite(Number(x)) && Number(x) > 0;
 export function selectPair(pairs, token) {
@@ -54,16 +55,21 @@ function outcomeMessage(outcome,exitPrice,net,baseline) {
     `${outcome.baseline_model_version}: ${signed(baseline/100)}%`,
     `ID: ${outcome.signal_id}`].join('\n');
 }
-function shadowStatements(env,source,alerts,now,cost,pending,current) {
+async function shadowStatements(env,source,alerts,now,cost,pending,current) {
   const statements=[];
   for (const alert of alerts) {
     const signalId=`${source}:${encodeURIComponent(alert.id)}:${now}`;
     const direction=alert.change>0 ? 1 : -1;
+    const agentId='momentum-agent';
+    const modelVersion='momentum-v1', baselineModelVersion='contrarian-v1';
+    const proof=await claimHash({claim_id:signalId,agent_id:agentId,model_version:modelVersion,source,
+      asset_id:alert.id,symbol:alert.symbol ?? alert.id,created_at:now,direction,entry_price:alert.price,
+      round_trip_cost_bps:cost,baseline_model_version:baselineModelVersion});
     statements.push(env.DB.prepare(`INSERT INTO shadow_signals
       (signal_id,source,asset_id,symbol,created_at,direction,baseline_direction,entry_price,
-       trigger_change_pct,round_trip_cost_bps,model_version,baseline_model_version)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).bind(signalId,source,alert.id,alert.symbol ?? alert.id,now,
-        direction,-direction,alert.price,rounded(alert.change),cost,'momentum-v1','contrarian-v1'));
+       trigger_change_pct,round_trip_cost_bps,model_version,baseline_model_version,agent_id,claim_hash)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(signalId,source,alert.id,alert.symbol ?? alert.id,now,
+        direction,-direction,alert.price,rounded(alert.change),cost,modelVersion,baselineModelVersion,agentId,proof));
     statements.push(env.DB.prepare(`INSERT INTO notification_outbox
       (notification_id,kind,created_at,payload) VALUES (?,?,?,?)`)
       .bind(`signal:${signalId}`,'signal',now,signalMessage(signalId,source,alert,direction,cost)));
@@ -188,7 +194,7 @@ export async function run(source, env, now) {
       env.DB.prepare('DELETE FROM snapshots WHERE source=? AND ts<?').bind(source,now-7*86400000),
       env.DB.prepare('DELETE FROM signals WHERE source=? AND ts<?').bind(source,now-30*86400000),
       env.DB.prepare('DELETE FROM runs WHERE source=? AND tick<?').bind(source,tick-288),
-      ...shadowStatements(env,source,result.alerts,now,cost,pending,data)
+      ...await shadowStatements(env,source,result.alerts,now,cost,pending,data)
     ]);
     await deliverNotifications(env,now);
     console.log(JSON.stringify({source,status:'ok',quotes:Object.keys(data).length,signals:result.alerts.length}));
@@ -203,5 +209,21 @@ export default {
     // Separate invocations keep CPU work independent for the two providers.
     await run(event.cron === '*/5 * * * *' ? 'dex' : 'cmc',env,event.scheduledTime);
   },
-  async fetch() { return new Response('Scheduled collector; HTTP access disabled.', {status:404}); }
+  async fetch(request, env) {
+    const url=new URL(request.url);
+    if (request.method!=='GET') return new Response('Method not allowed',{status:405});
+    const match=url.pathname.match(/^\/proof\/([^/]+)$/);
+    if (!match) return new Response('Not found',{status:404});
+    const signalId=decodeURIComponent(match[1]);
+    const signal=await env.DB.prepare(`SELECT signal_id,agent_id,claim_hash,source,asset_id,symbol,created_at,
+      direction,entry_price,round_trip_cost_bps,model_version,baseline_model_version
+      FROM shadow_signals WHERE signal_id=?`).bind(signalId).first();
+    if (!signal) return Response.json({error:'claim_not_found'},{status:404});
+    const outcomes=await env.DB.prepare(`SELECT horizon_minutes,due_at,status,evaluated_at,exit_price,
+      net_return_bps,baseline_net_return_bps,missing_reason FROM shadow_outcomes
+      WHERE signal_id=? ORDER BY horizon_minutes`).bind(signalId).all();
+    return Response.json({proof_version:'proofmarket-v1',claim:signal,outcomes:outcomes.results ?? []},{
+      headers:{'Cache-Control':'public, max-age=60'}
+    });
+  }
 };
