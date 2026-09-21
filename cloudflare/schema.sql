@@ -48,6 +48,20 @@ CREATE TABLE IF NOT EXISTS shadow_outcomes (
 CREATE INDEX IF NOT EXISTS shadow_outcomes_due
  ON shadow_outcomes(status,due_at);
 
+CREATE TABLE IF NOT EXISTS notification_outbox (
+ notification_id TEXT PRIMARY KEY,
+ kind TEXT NOT NULL CHECK(kind IN ('signal','outcome','missing')),
+ created_at INTEGER NOT NULL,
+ payload TEXT NOT NULL,
+ status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','sent')),
+ attempts INTEGER NOT NULL DEFAULT 0,
+ last_attempt_at INTEGER,
+ sent_at INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS notification_outbox_pending
+ ON notification_outbox(status,created_at);
+
 CREATE TRIGGER IF NOT EXISTS shadow_signals_no_update
  BEFORE UPDATE ON shadow_signals BEGIN
   SELECT RAISE(ABORT,'shadow_signals are immutable');
@@ -61,6 +75,11 @@ CREATE TRIGGER IF NOT EXISTS shadow_signals_no_delete
 CREATE TRIGGER IF NOT EXISTS finalized_outcomes_no_update
  BEFORE UPDATE ON shadow_outcomes WHEN OLD.status<>'pending' BEGIN
   SELECT RAISE(ABORT,'finalized shadow_outcome is immutable');
+END;
+
+CREATE TRIGGER IF NOT EXISTS notification_payload_no_update
+ BEFORE UPDATE OF notification_id,kind,created_at,payload ON notification_outbox BEGIN
+  SELECT RAISE(ABORT,'notification payload is immutable');
  END;
 
 CREATE VIEW IF NOT EXISTS shadow_scorecard AS
