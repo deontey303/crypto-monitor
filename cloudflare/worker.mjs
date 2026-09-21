@@ -24,6 +24,55 @@ export function compare(current, previous, cooldown, now) {
   }
   return {alerts, cooldown: next};
 }
+const HORIZONS = [15,60,240];
+const rounded = value => Math.round(value*1e8)/1e8;
+function shadowCost(env) {
+  const value = Number(env.SHADOW_ROUND_TRIP_COST_BPS ?? 20);
+  if (!Number.isFinite(value) || value < 0 || value > 1000) throw new Error('invalid_shadow_cost');
+  return value;
+}
+async function pendingOutcomes(env,source,now) {
+  const result = await env.DB.prepare(`SELECT o.signal_id,o.horizon_minutes,o.due_at,s.asset_id,s.direction,
+    s.baseline_direction,s.entry_price,s.round_trip_cost_bps
+    FROM shadow_outcomes o JOIN shadow_signals s USING(signal_id)
+    WHERE s.source=? AND o.status='pending' AND o.due_at<=?`)
+    .bind(source,now).all();
+  return result.results ?? [];
+}
+function shadowStatements(env,source,alerts,now,cost,pending,current) {
+  const statements=[];
+  for (const alert of alerts) {
+    const signalId=`${source}:${encodeURIComponent(alert.id)}:${now}`;
+    const direction=alert.change>0 ? 1 : -1;
+    statements.push(env.DB.prepare(`INSERT INTO shadow_signals
+      (signal_id,source,asset_id,symbol,created_at,direction,baseline_direction,entry_price,
+       trigger_change_pct,round_trip_cost_bps,model_version,baseline_model_version)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).bind(signalId,source,alert.id,alert.symbol ?? alert.id,now,
+        direction,-direction,alert.price,rounded(alert.change),cost,'momentum-v1','contrarian-v1'));
+    for (const horizon of HORIZONS) statements.push(env.DB.prepare(`INSERT INTO shadow_outcomes
+      (signal_id,horizon_minutes,due_at,status) VALUES (?,?,?,'pending')`)
+      .bind(signalId,horizon,now+horizon*MIN));
+  }
+  for (const outcome of pending) {
+    const exitPrice=Number(current[outcome.asset_id]?.price);
+    if (!positive(exitPrice)) {
+      if (now >= outcome.due_at+30*MIN) statements.push(env.DB.prepare(`UPDATE shadow_outcomes
+        SET status='missing',evaluated_at=?,missing_reason='quote_unavailable'
+        WHERE signal_id=? AND horizon_minutes=? AND status='pending'`)
+        .bind(now,outcome.signal_id,outcome.horizon_minutes));
+      continue;
+    }
+    const raw=(exitPrice/outcome.entry_price-1)*10000;
+    const gross=outcome.direction*raw;
+    statements.push(env.DB.prepare(`UPDATE shadow_outcomes SET status='evaluated',evaluated_at=?,
+      exit_price=?,gross_return_bps=?,net_return_bps=?,baseline_net_return_bps=?
+      WHERE signal_id=? AND horizon_minutes=? AND status='pending'`).bind(now,exitPrice,
+        rounded(gross),rounded(gross-outcome.round_trip_cost_bps),
+        rounded(outcome.baseline_direction*raw-outcome.round_trip_cost_bps),
+        outcome.signal_id,outcome.horizon_minutes));
+  }
+  return statements;
+}
 async function json(url, headers = {}) {
   const response = await fetch(url, {headers, signal: AbortSignal.timeout(20000), redirect:'error'});
   if (!response.ok) throw new Error(`provider_http_${response.status}`);
@@ -80,13 +129,16 @@ export async function run(source, env, now) {
     const previous = await env.DB.prepare('SELECT ts,data FROM snapshots WHERE source=? AND ts<? ORDER BY ts DESC LIMIT 1').bind(source,now).first();
     const state = await env.DB.prepare('SELECT cooldown FROM state WHERE source=?').bind(source).first();
     const result = compare(data,previous,JSON.parse(state?.cooldown ?? '{}'),now);
+    const pending = await pendingOutcomes(env,source,now);
+    const cost = shadowCost(env);
     await env.DB.batch([
       env.DB.prepare('INSERT INTO snapshots VALUES (?,?,?)').bind(source,now,JSON.stringify(data)),
       env.DB.prepare('INSERT OR REPLACE INTO state VALUES (?,?,?)').bind(source,now,JSON.stringify(result.cooldown)),
       env.DB.prepare('INSERT INTO signals VALUES (?,?,?)').bind(source,now,JSON.stringify(result.alerts)),
       env.DB.prepare('DELETE FROM snapshots WHERE source=? AND ts<?').bind(source,now-7*86400000),
       env.DB.prepare('DELETE FROM signals WHERE source=? AND ts<?').bind(source,now-30*86400000),
-      env.DB.prepare('DELETE FROM runs WHERE source=? AND tick<?').bind(source,tick-288)
+      env.DB.prepare('DELETE FROM runs WHERE source=? AND tick<?').bind(source,tick-288),
+      ...shadowStatements(env,source,result.alerts,now,cost,pending,data)
     ]);
     console.log(JSON.stringify({source,status:'ok',quotes:Object.keys(data).length,signals:result.alerts.length}));
   } catch (error) {
