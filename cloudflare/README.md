@@ -78,3 +78,19 @@ Telegram — канал наблюдения, а не команда откры�
 Повторная доставка одного Cron не вызывает повторный запрос. Сбой после захвата запуска приводит к пропуску интервала; повтор будет только в следующем интервале. Это сознательный выбор для ограничения расхода.
 
 Документация: [Workers limits](https://developers.cloudflare.com/workers/platform/limits/), [D1 pricing](https://developers.cloudflare.com/d1/platform/pricing/), [Cron](https://developers.cloudflare.com/workers/configuration/cron-triggers/), [CMC pricing](https://coinmarketcap.com/api/pricing/).
+
+## Deployment с телефона через GitHub Actions
+
+Workflow `.github/workflows/deploy-cloudflare.yml` запускается только вручную из ветки `main`. Перед первым запуском:
+
+1. В Cloudflare создайте D1 database с именем `crypto-monitor` и скопируйте её UUID.
+2. В GitHub откройте **Settings → Secrets and variables → Actions** и добавьте secrets:
+   - `CLOUDFLARE_API_TOKEN`
+   - `CLOUDFLARE_ACCOUNT_ID`
+   - `CMC_API_KEY`
+   - `TELEGRAM_BOT_TOKEN`
+   - `TELEGRAM_CHAT_ID`
+3. Там же во вкладке **Variables** добавьте `CLOUDFLARE_D1_DATABASE_ID` со скопированным UUID.
+4. Откройте **Actions → Deploy Cloudflare Worker → Run workflow**, оставьте ветку `main`, введите `DEPLOY`.
+
+Workflow сначала проверяет наличие конфигурации и запускает тесты, затем применяет идемпотентную D1 schema, разворачивает Worker вместе с secrets и отправляет в Telegram контрольное сообщение с коротким Git commit. Значения secrets в репозиторий не записываются.
