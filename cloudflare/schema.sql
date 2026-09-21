@@ -28,7 +28,9 @@ CREATE TABLE IF NOT EXISTS shadow_signals (
  trigger_change_pct REAL NOT NULL,
  round_trip_cost_bps REAL NOT NULL CHECK(round_trip_cost_bps >= 0),
  model_version TEXT NOT NULL,
- baseline_model_version TEXT NOT NULL
+ baseline_model_version TEXT NOT NULL,
+ agent_id TEXT NOT NULL,
+ claim_hash TEXT NOT NULL UNIQUE
 );
 
 CREATE TABLE IF NOT EXISTS shadow_outcomes (
