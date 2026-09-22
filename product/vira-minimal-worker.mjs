@@ -5,9 +5,21 @@ const {Pool}=pg;
 const SYMBOL='BTCUSDT', INTERVAL_MS=5*60*1000, HORIZONS=[15,60,240];
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 async function price(){
-  const r=await fetch('https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT',{signal:AbortSignal.timeout(10000)});
-  if(!r.ok) throw new Error('market_'+r.status);
-  const p=Number((await r.json()).price); if(!(p>0)) throw new Error('bad_price'); return p;
+  const sources=[
+    {source:'coinbase',url:'https://api.exchange.coinbase.com/products/BTC-USD/ticker',parse:x=>Number(x.price)},
+    {source:'kraken',url:'https://api.kraken.com/0/public/Ticker?pair=XBTUSD',parse:x=>Number(Object.values(x.result||{})[0]?.c?.[0])},
+    {source:'coingecko',url:'https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd',parse:x=>Number(x.bitcoin?.usd)}
+  ];
+  const errors=[];
+  for(const s of sources){
+    try{
+      const r=await fetch(s.url,{headers:{accept:'application/json','user-agent':'vira-crypto-monitor/1.0'},signal:AbortSignal.timeout(10000)});
+      if(!r.ok) throw new Error('http_'+r.status);
+      const p=s.parse(await r.json()); if(!(p>0)) throw new Error('bad_price');
+      return {price:p,source:s.source,observed_at:new Date().toISOString()};
+    }catch(e){errors.push(s.source+':'+String(e.message||e));}
+  }
+  throw new Error('market_all_sources_failed '+errors.join(','));
 }
 function decide(prev,p){
   if(!prev) return {action:'NO_TRADE',evidence:{reason:'bootstrap',price:p}};
@@ -39,8 +51,8 @@ async function main(){
  await schema(db); checkpoint('SCHEMA_READY');
  let prev=null; console.log(JSON.stringify({vira:'minimal-v0',status:'started'}));
  for(;;){const started=Date.now();
-  try{const p=await price(); checkpoint('PRICE_RECEIVED',{instrument:SYMBOL,price:p});
-   const now=new Date(); const d=decide(prev,p); const id='vira-'+crypto.randomUUID();
+  try{const quote=await price(); const p=quote.price; checkpoint('PRICE_RECEIVED',{instrument:SYMBOL,price:p,source:quote.source,observed_at:quote.observed_at});
+   const now=new Date(); const d=decide(prev,p); d.evidence.market_data={source:quote.source,observed_at:quote.observed_at}; const id='vira-'+crypto.randomUUID();
    await db.query('BEGIN');
    try{await db.query('INSERT INTO vira_minimal_decisions VALUES($1,$2,$3,$4,$5,$6)',[id,now,SYMBOL,d.evidence,d.action,p]);
     for(const h of HORIZONS)await db.query('INSERT INTO vira_minimal_outcomes(decision_id,horizon_minutes,due_at) VALUES($1,$2,$3)',[id,h,new Date(+now+h*60000)]);
