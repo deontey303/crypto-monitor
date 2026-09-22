@@ -37,3 +37,34 @@ CREATE OR REPLACE VIEW shadow_scorecard AS SELECT s.model_version,s.baseline_mod
  AVG(CASE WHEN o.net_return_bps>0 THEN 1.0 ELSE 0.0 END) FILTER (WHERE o.status='evaluated') AS model_hit_rate,
  AVG(CASE WHEN o.baseline_net_return_bps>0 THEN 1.0 ELSE 0.0 END) FILTER (WHERE o.status='evaluated') AS baseline_hit_rate
  FROM shadow_signals s JOIN shadow_outcomes o USING(signal_id) GROUP BY s.model_version,s.baseline_model_version,o.horizon_minutes;
+
+
+-- VIRA economy-of-cognition: preregistered sensor acquisition ledger.
+CREATE TABLE IF NOT EXISTS decision_measurements (
+ measurement_id TEXT PRIMARY KEY, decision_id TEXT NOT NULL, created_at BIGINT NOT NULL,
+ instrument TEXT NOT NULL, horizon TEXT NOT NULL, policy TEXT NOT NULL CHECK(policy IN ('ig','always','random')),
+ pre_action TEXT NOT NULL CHECK(pre_action IN ('LONG','SHORT','WAIT','NO_TRADE')),
+ hypotheses_json TEXT NOT NULL, sensor_id TEXT NOT NULL,
+ p_action_change DOUBLE PRECISION NOT NULL CHECK(p_action_change>=0 AND p_action_change<=1),
+ expected_loss_avoided DOUBLE PRECISION NOT NULL CHECK(expected_loss_avoided>=0),
+ measurement_cost DOUBLE PRECISION NOT NULL CHECK(measurement_cost>=0),
+ latency_cost DOUBLE PRECISION NOT NULL CHECK(latency_cost>=0), ignorance_bid DOUBLE PRECISION NOT NULL,
+ action_map_json TEXT NOT NULL, observed_at BIGINT, observed_value_json TEXT,
+ post_action TEXT CHECK(post_action IN ('LONG','SHORT','WAIT','NO_TRADE')),
+ outcome_at BIGINT, net_decision_value DOUBLE PRECISION, counterfactual_pre_action_value DOUBLE PRECISION
+);
+CREATE INDEX IF NOT EXISTS decision_measurements_decision ON decision_measurements(decision_id,policy);
+CREATE OR REPLACE FUNCTION protect_measurement_preregistration() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+ IF NEW.decision_id IS DISTINCT FROM OLD.decision_id OR NEW.created_at IS DISTINCT FROM OLD.created_at
+ OR NEW.instrument IS DISTINCT FROM OLD.instrument OR NEW.horizon IS DISTINCT FROM OLD.horizon
+ OR NEW.policy IS DISTINCT FROM OLD.policy OR NEW.pre_action IS DISTINCT FROM OLD.pre_action
+ OR NEW.hypotheses_json IS DISTINCT FROM OLD.hypotheses_json OR NEW.sensor_id IS DISTINCT FROM OLD.sensor_id
+ OR NEW.p_action_change IS DISTINCT FROM OLD.p_action_change OR NEW.expected_loss_avoided IS DISTINCT FROM OLD.expected_loss_avoided
+ OR NEW.measurement_cost IS DISTINCT FROM OLD.measurement_cost OR NEW.latency_cost IS DISTINCT FROM OLD.latency_cost
+ OR NEW.ignorance_bid IS DISTINCT FROM OLD.ignorance_bid OR NEW.action_map_json IS DISTINCT FROM OLD.action_map_json
+ THEN RAISE EXCEPTION 'preregistered measurement fields are immutable'; END IF; RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS decision_measurements_freeze_preregistered ON decision_measurements;
+CREATE TRIGGER decision_measurements_freeze_preregistered BEFORE UPDATE ON decision_measurements
+ FOR EACH ROW EXECUTE FUNCTION protect_measurement_preregistration();
