@@ -68,3 +68,15 @@ END $$;
 DROP TRIGGER IF EXISTS decision_measurements_freeze_preregistered ON decision_measurements;
 CREATE TRIGGER decision_measurements_freeze_preregistered BEFORE UPDATE ON decision_measurements
  FOR EACH ROW EXECUTE FUNCTION protect_measurement_preregistration();
+
+
+CREATE TABLE IF NOT EXISTS ignorance_states (
+ decision_id TEXT PRIMARY KEY,created_at BIGINT NOT NULL,instrument TEXT NOT NULL,horizon TEXT NOT NULL,
+ state TEXT NOT NULL CHECK(state IN ('BREAKOUT','SPOT_PERP_CAUSE','JUMP','PRICE_DISCOVERY','QUIET')),
+ feature_schema_version TEXT NOT NULL,pre_flow_features_json TEXT NOT NULL,flow_observed_at BIGINT,
+ CHECK(flow_observed_at IS NULL OR flow_observed_at>=created_at)
+);
+CREATE OR REPLACE FUNCTION deny_ignorance_state_mutation() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN RAISE EXCEPTION 'ignorance state is immutable'; END $$;
+DROP TRIGGER IF EXISTS ignorance_states_no_update ON ignorance_states;
+CREATE TRIGGER ignorance_states_no_update BEFORE UPDATE OR DELETE ON ignorance_states FOR EACH ROW EXECUTE FUNCTION deny_ignorance_state_mutation();
