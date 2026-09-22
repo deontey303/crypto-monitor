@@ -115,6 +115,7 @@ CREATE TABLE IF NOT EXISTS decision_measurements (
  latency_cost REAL NOT NULL CHECK(latency_cost>=0),
  ignorance_bid REAL NOT NULL,
  action_map_json TEXT NOT NULL,
+ entry_price REAL CHECK(entry_price>0),
  observed_at INTEGER,
  observed_value_json TEXT,
  post_action TEXT CHECK(post_action IN ('LONG','SHORT','WAIT','NO_TRADE')),
@@ -152,7 +153,7 @@ CREATE TRIGGER IF NOT EXISTS ignorance_states_no_update
 CREATE TRIGGER IF NOT EXISTS ignorance_states_no_delete
  BEFORE DELETE ON ignorance_states BEGIN SELECT RAISE(ABORT,'ignorance state is immutable'); END;
 
-ALTER TABLE decision_measurements ADD COLUMN entry_price REAL CHECK(entry_price>0);
+-- D1 migration note: entry_price is added in deployment migration; fresh schema includes it below.
 CREATE TABLE IF NOT EXISTS cognition_outcomes(decision_id TEXT NOT NULL,horizon_minutes INTEGER NOT NULL CHECK(horizon_minutes IN (60,240)),due_at INTEGER NOT NULL,status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','evaluated','missing')),evaluated_at INTEGER,PRIMARY KEY(decision_id,horizon_minutes));
 CREATE INDEX IF NOT EXISTS cognition_outcomes_due ON cognition_outcomes(status,due_at);
 CREATE TABLE IF NOT EXISTS cognition_policy_outcomes(decision_id TEXT NOT NULL,horizon_minutes INTEGER NOT NULL,policy TEXT NOT NULL CHECK(policy IN ('ig','always','random')),exit_price REAL NOT NULL CHECK(exit_price>0),net_decision_value REAL NOT NULL,counterfactual_pre_action_value REAL NOT NULL,PRIMARY KEY(decision_id,horizon_minutes,policy));
