@@ -1,12 +1,12 @@
 name: Deploy Cloudflare Worker
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - "cloudflare/**"
+      - ".github/workflows/deploy-cloudflare.yml"
   workflow_dispatch:
-    inputs:
-      confirmation:
-        description: "Type DEPLOY to release main to Cloudflare"
-        required: true
-        type: string
 
 permissions:
   contents: read
@@ -31,7 +31,6 @@ jobs:
 
       - name: Validate deployment inputs
         env:
-          CONFIRMATION: ${{ inputs.confirmation }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CMC_API_KEY: ${{ secrets.CMC_API_KEY }}
@@ -40,10 +39,6 @@ jobs:
           D1_DATABASE_ID: ${{ vars.CLOUDFLARE_D1_DATABASE_ID }}
         shell: bash
         run: |
-          if [ "$CONFIRMATION" != "DEPLOY" ]; then
-            echo "::error::Confirmation must be DEPLOY"
-            exit 1
-          fi
           for required_name in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID CMC_API_KEY TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID; do
             if [ -z "${!required_name}" ]; then
               echo "::error::Missing GitHub Actions secret: $required_name"
@@ -60,7 +55,7 @@ jobs:
         run: python -m unittest discover -s tests -v
 
       - name: Run Worker tests
-        run: node --test cloudflare/worker.test.mjs
+        run: node --test cloudflare/worker.test.mjs cloudflare/vira-runtime.test.mjs
 
       - name: Apply D1 schema
         uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4
@@ -87,6 +82,15 @@ jobs:
           CMC_API_KEY: ${{ secrets.CMC_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+      - name: Verify deployed watchdog ledger
+        uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: cloudflare
+          wranglerVersion: "4.136.0"
+          command: d1 execute crypto-monitor --remote --command="SELECT event_type,created_at FROM vira_runtime_events ORDER BY created_at DESC LIMIT 5"
 
       - name: Verify Telegram credentials
         env:
