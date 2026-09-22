@@ -7,7 +7,8 @@
     "start": "node railway/server.mjs",
     "run:dex": "node railway/runner.mjs dex",
     "run:cmc": "node railway/runner.mjs cmc",
-    "run:flow": "node product/run-flow.mjs"
+    "run:flow": "node product/run-flow.mjs",
+    "run:cognition": "node product/run-cognition.mjs"
   },
   "dependencies": {
     "pg": "^8.16.3"
