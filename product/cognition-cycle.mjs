@@ -47,7 +47,7 @@ export async function openDecision(db,symbol,now=Date.now(),randomUnit=Math.rand
  for(const h of H) await db.prepare('INSERT INTO cognition_outcomes(decision_id,horizon_minutes,due_at,status) VALUES (?,?,?,?)').bind(id,h,now+h*MIN,'pending').run();
  return {decisionId:id,state:frozen.state,policies:policies.map(p=>({policy:p.policy,acquire:p.acquire})),flowAcquired:need};
 }
-export async function settleDue(db,now=Date.now()){
+export async function settleDue(db,now=Date.now(),onSettlement=null){
  const due=await db.prepare("SELECT decision_id,horizon_minutes FROM cognition_outcomes WHERE status='pending' AND due_at<=?").bind(now).all();
  for(const o of due.results??[]){
   const rows=(await db.prepare('SELECT policy,instrument,post_action,pre_action,entry_price,measurement_cost FROM decision_measurements WHERE decision_id=?').bind(o.decision_id).all()).results??[];
@@ -61,9 +61,10 @@ export async function settleDue(db,now=Date.now()){
     .bind(o.decision_id,o.horizon_minutes,r.policy,price,val,pre).run();
   }
   await db.prepare("UPDATE cognition_outcomes SET status='evaluated',evaluated_at=? WHERE decision_id=? AND horizon_minutes=? AND status='pending'").bind(now,o.decision_id,o.horizon_minutes).run();
+  if(onSettlement) await onSettlement({decisionId:o.decision_id,horizonMinutes:o.horizon_minutes,evaluatedAt:now,exitPrice:price,policies:rows.map(r=>r.policy)});
  }
  return due.results?.length??0;
 }
-export async function runCycle({db=createDB(),symbols=(process.env.VIRA_SYMBOLS??'BTCUSDT,ETHUSDT,SOLUSDT').split(','),now=Date.now()}={}){
- await settleDue(db,now);const opened=[];for(const symbol of symbols)opened.push(await openDecision(db,symbol.trim(),now));return opened;
+export async function runCycle({db=createDB(),symbols=(process.env.VIRA_SYMBOLS??'BTCUSDT,ETHUSDT,SOLUSDT').split(','),now=Date.now(),onSettlement=null}={}){
+ await settleDue(db,now,onSettlement);const opened=[];for(const symbol of symbols)opened.push(await openDecision(db,symbol.trim(),now));return opened;
 }
