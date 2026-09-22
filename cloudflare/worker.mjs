@@ -26,6 +26,22 @@ export function compare(current, previous, cooldown, now) {
   return {alerts, cooldown: next};
 }
 const HORIZONS = [15,60,240];
+const VIRA_VERSION='vira-signal-runtime-v1';
+export function coordinateSignal(alert) {
+  const momentum=alert.change>0?1:-1;
+  const liquidity=Number(alert.liquidity||0);
+  const volume=Number(alert.volume24h||0);
+  const evidenceOk=positive(alert.price) && Number.isFinite(alert.change);
+  const criticVeto=!evidenceOk || Math.abs(alert.change)>35 || (liquidity>0 && liquidity<25000);
+  const flowQuality=liquidity>0 && volume>0 ? Math.min(1,volume/liquidity) : null;
+  const criticReason=!evidenceOk?'missing_evidence':Math.abs(alert.change)>35?'extreme_move':(liquidity>0&&liquidity<25000)?'thin_liquidity':null;
+  return {version:VIRA_VERSION,votes:{momentum,flowQuality},critic:{veto:criticVeto,reason:criticReason},
+    action:criticVeto?'NO_TRADE':(momentum===1?'LONG':'SHORT')};
+}
+async function runtimeEvent(env,now,type,payload={}) {
+  await env.DB.prepare('INSERT OR IGNORE INTO vira_runtime_events(event_id,created_at,event_type,payload) VALUES (?,?,?,?)')
+    .bind(`${type}:${now}:${crypto.randomUUID()}`,now,type,JSON.stringify(payload)).run();
+}
 const rounded = value => Math.round(value*1e8)/1e8;
 function shadowCost(env) {
   const value = Number(env.SHADOW_ROUND_TRIP_COST_BPS ?? 20);
@@ -41,11 +57,11 @@ async function pendingOutcomes(env,source,now) {
   return result.results ?? [];
 }
 const signed = value => `${value>=0?'+':''}${value.toFixed(2)}`;
-function signalMessage(signalId,source,alert,direction,cost) {
-  return [`🧪 SHADOW SIGNAL`,`${alert.symbol ?? alert.id} · ${direction===1?'LONG':'SHORT'}`,
-    `Source: ${source}`,`Entry: ${alert.price}`,`Trigger: ${signed(alert.change)}%`,
-    `Model: momentum-v1 vs contrarian-v1`,`Horizons: 15m / 1h / 4h`,`Round-trip cost: ${cost} bps`,
-    `ID: ${signalId}`].join('\n');
+function signalMessage(signalId,source,alert,direction,cost,decision) {
+  return [`👁 VIRA · SHADOW / PROSPECTIVE`,`${alert.symbol ?? alert.id} · ${decision.action}`,
+    `Source: ${source}`,`Entry reference: ${alert.price}`,`Trigger: ${signed(alert.change)}%`,
+    `Coordinator: ${decision.version}`,`Critic: PASS`,`Horizons: 15m / 1h / 4h`,
+    `Round-trip cost: ${cost} bps`,`ID: ${signalId}`].join('\n');
 }
 function outcomeMessage(outcome,exitPrice,net,baseline) {
   return [`📊 SHADOW RESULT · ${outcome.horizon_minutes}m`,
@@ -59,9 +75,11 @@ async function shadowStatements(env,source,alerts,now,cost,pending,current) {
   const statements=[];
   for (const alert of alerts) {
     const signalId=`${source}:${encodeURIComponent(alert.id)}:${now}`;
-    const direction=alert.change>0 ? 1 : -1;
-    const agentId='momentum-agent';
-    const modelVersion='momentum-v1', baselineModelVersion='contrarian-v1';
+    const decision=coordinateSignal(alert);
+    if(decision.action==='NO_TRADE') { await runtimeEvent(env,now,'critic_veto',{source,asset:alert.id,reason:decision.critic.reason}); continue; }
+    const direction=decision.action==='LONG' ? 1 : -1;
+    const agentId='vira-coordinator';
+    const modelVersion=VIRA_VERSION, baselineModelVersion='contrarian-v1';
     const proof=await claimHash({claim_id:signalId,agent_id:agentId,model_version:modelVersion,source,
       asset_id:alert.id,symbol:alert.symbol ?? alert.id,created_at:now,direction,entry_price:alert.price,
       round_trip_cost_bps:cost,baseline_model_version:baselineModelVersion});
@@ -72,7 +90,7 @@ async function shadowStatements(env,source,alerts,now,cost,pending,current) {
         direction,-direction,alert.price,rounded(alert.change),cost,modelVersion,baselineModelVersion,agentId,proof));
     statements.push(env.DB.prepare(`INSERT INTO notification_outbox
       (notification_id,kind,created_at,payload) VALUES (?,?,?,?)`)
-      .bind(`signal:${signalId}`,'signal',now,signalMessage(signalId,source,alert,direction,cost)));
+      .bind(`signal:${signalId}`,'signal',now,signalMessage(signalId,source,alert,direction,cost,decision)));
     for (const horizon of HORIZONS) statements.push(env.DB.prepare(`INSERT INTO shadow_outcomes
       (signal_id,horizon_minutes,due_at,status) VALUES (?,?,?,'pending')`)
       .bind(signalId,horizon,now+horizon*MIN));
@@ -181,6 +199,7 @@ export async function run(source, env, now) {
   const claim = await env.DB.prepare('INSERT OR IGNORE INTO runs(source,tick) VALUES (?,?)').bind(source,tick).run();
   if (!claim.meta.changes) return;
   try {
+    await runtimeEvent(env,now,'heartbeat',{source,tick});
     const data = source === 'dex' ? await collectDex() : await collectCmc(env,now);
     const previous = await env.DB.prepare('SELECT ts,data FROM snapshots WHERE source=? AND ts<? ORDER BY ts DESC LIMIT 1').bind(source,now).first();
     const state = await env.DB.prepare('SELECT cooldown FROM state WHERE source=?').bind(source).first();
@@ -196,10 +215,12 @@ export async function run(source, env, now) {
       env.DB.prepare('DELETE FROM runs WHERE source=? AND tick<?').bind(source,tick-288),
       ...await shadowStatements(env,source,result.alerts,now,cost,pending,data)
     ]);
+    await runtimeEvent(env,now,'cycle_ok',{source,quotes:Object.keys(data).length,candidates:result.alerts.length});
     await deliverNotifications(env,now);
-    console.log(JSON.stringify({source,status:'ok',quotes:Object.keys(data).length,signals:result.alerts.length}));
+    console.log(JSON.stringify({source,status:'ok',quotes:Object.keys(data).length,signals:result.alerts.length,version:VIRA_VERSION}));
   } catch (error) {
     // Never log provider bodies, headers, env or secret values.
+    await runtimeEvent(env,now,'cycle_error',{source,reason:/^[a-z_]+$/.test(error.message)?error.message:'request_or_storage_error'}).catch(()=>{});
     console.log(JSON.stringify({source,status:'failed',reason: /^[a-z_]+$/.test(error.message) ? error.message : 'request_or_storage_error'}));
     throw new Error(`${source}_collection_failed`);
   }
