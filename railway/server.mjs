@@ -1,6 +1,7 @@
 import http from 'node:http';
 import {readFile} from 'node:fs/promises';
 import {createDB} from './db.mjs';
+import {startLiquidityResponseSensor} from './lr-live.mjs';
 export async function proof(DB,signalId){
  const signal=await DB.prepare(`SELECT signal_id,agent_id,claim_hash,source,asset_id,symbol,created_at,direction,entry_price,round_trip_cost_bps,model_version,baseline_model_version FROM shadow_signals WHERE signal_id=?`).bind(signalId).first();
  if(!signal)return null;
@@ -18,6 +19,7 @@ export function handler(DB){
 }
 if(import.meta.url===`file://${process.argv[1]}`){
  const DB=createDB();await DB.exec(await readFile(new URL('./schema.sql',import.meta.url),'utf8'));
+ if(process.env.LR_ENABLED==='1') startLiquidityResponseSensor(DB).catch(e=>console.error('lr_sensor_stopped',e.message));
  const server=http.createServer((req,res)=>handler(DB)(req,res).catch(()=>{res.writeHead(500);res.end('Internal error');}));
  server.listen(Number(process.env.PORT||3000),'0.0.0.0');
 }
