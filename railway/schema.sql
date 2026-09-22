@@ -80,3 +80,15 @@ CREATE OR REPLACE FUNCTION deny_ignorance_state_mutation() RETURNS trigger LANGU
 BEGIN RAISE EXCEPTION 'ignorance state is immutable'; END $$;
 DROP TRIGGER IF EXISTS ignorance_states_no_update ON ignorance_states;
 CREATE TRIGGER ignorance_states_no_update BEFORE UPDATE OR DELETE ON ignorance_states FOR EACH ROW EXECUTE FUNCTION deny_ignorance_state_mutation();
+
+ALTER TABLE decision_measurements ADD COLUMN IF NOT EXISTS entry_price DOUBLE PRECISION CHECK(entry_price>0);
+CREATE TABLE IF NOT EXISTS cognition_outcomes(
+ decision_id TEXT NOT NULL REFERENCES ignorance_states(decision_id),horizon_minutes INTEGER NOT NULL CHECK(horizon_minutes IN (60,240)),
+ due_at BIGINT NOT NULL,status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','evaluated','missing')),evaluated_at BIGINT,
+ PRIMARY KEY(decision_id,horizon_minutes));
+CREATE INDEX IF NOT EXISTS cognition_outcomes_due ON cognition_outcomes(status,due_at);
+CREATE TABLE IF NOT EXISTS cognition_policy_outcomes(
+ decision_id TEXT NOT NULL,horizon_minutes INTEGER NOT NULL,policy TEXT NOT NULL CHECK(policy IN ('ig','always','random')),
+ exit_price DOUBLE PRECISION NOT NULL CHECK(exit_price>0),net_decision_value DOUBLE PRECISION NOT NULL,
+ counterfactual_pre_action_value DOUBLE PRECISION NOT NULL,
+ PRIMARY KEY(decision_id,horizon_minutes,policy));
