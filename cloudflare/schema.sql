@@ -157,3 +157,17 @@ CREATE TRIGGER IF NOT EXISTS ignorance_states_no_delete
 CREATE TABLE IF NOT EXISTS cognition_outcomes(decision_id TEXT NOT NULL,horizon_minutes INTEGER NOT NULL CHECK(horizon_minutes IN (60,240)),due_at INTEGER NOT NULL,status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','evaluated','missing')),evaluated_at INTEGER,PRIMARY KEY(decision_id,horizon_minutes));
 CREATE INDEX IF NOT EXISTS cognition_outcomes_due ON cognition_outcomes(status,due_at);
 CREATE TABLE IF NOT EXISTS cognition_policy_outcomes(decision_id TEXT NOT NULL,horizon_minutes INTEGER NOT NULL,policy TEXT NOT NULL CHECK(policy IN ('ig','always','random')),exit_price REAL NOT NULL CHECK(exit_price>0),net_decision_value REAL NOT NULL,counterfactual_pre_action_value REAL NOT NULL,PRIMARY KEY(decision_id,horizon_minutes,policy));
+
+
+-- VIRA Signal Runtime v1: append-only runtime observability / watchdog source.
+CREATE TABLE IF NOT EXISTS vira_runtime_events (
+ event_id TEXT PRIMARY KEY,
+ created_at INTEGER NOT NULL,
+ event_type TEXT NOT NULL CHECK(event_type IN ('heartbeat','cycle_ok','cycle_error','critic_veto')),
+ payload TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS vira_runtime_events_created ON vira_runtime_events(created_at);
+CREATE TRIGGER IF NOT EXISTS vira_runtime_events_no_update
+ BEFORE UPDATE ON vira_runtime_events BEGIN SELECT RAISE(ABORT,'vira runtime events are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS vira_runtime_events_no_delete
+ BEFORE DELETE ON vira_runtime_events BEGIN SELECT RAISE(ABORT,'vira runtime events are append-only'); END;
