@@ -96,3 +96,64 @@ SELECT s.model_version, s.baseline_model_version, o.horizon_minutes,
  AVG(CASE WHEN o.status='evaluated' THEN CASE WHEN o.baseline_net_return_bps>0 THEN 1.0 ELSE 0.0 END END) AS baseline_hit_rate
 FROM shadow_signals s JOIN shadow_outcomes o USING(signal_id)
 GROUP BY s.model_version,s.baseline_model_version,o.horizon_minutes;
+
+
+-- VIRA economy-of-cognition: preregistered sensor acquisition ledger.
+CREATE TABLE IF NOT EXISTS decision_measurements (
+ measurement_id TEXT PRIMARY KEY,
+ decision_id TEXT NOT NULL,
+ created_at INTEGER NOT NULL,
+ instrument TEXT NOT NULL,
+ horizon TEXT NOT NULL,
+ policy TEXT NOT NULL CHECK(policy IN ('ig','always','random')),
+ pre_action TEXT NOT NULL CHECK(pre_action IN ('LONG','SHORT','WAIT','NO_TRADE')),
+ hypotheses_json TEXT NOT NULL,
+ sensor_id TEXT NOT NULL,
+ p_action_change REAL NOT NULL CHECK(p_action_change>=0 AND p_action_change<=1),
+ expected_loss_avoided REAL NOT NULL CHECK(expected_loss_avoided>=0),
+ measurement_cost REAL NOT NULL CHECK(measurement_cost>=0),
+ latency_cost REAL NOT NULL CHECK(latency_cost>=0),
+ ignorance_bid REAL NOT NULL,
+ action_map_json TEXT NOT NULL,
+ entry_price REAL CHECK(entry_price>0),
+ observed_at INTEGER,
+ observed_value_json TEXT,
+ post_action TEXT CHECK(post_action IN ('LONG','SHORT','WAIT','NO_TRADE')),
+ outcome_at INTEGER,
+ net_decision_value REAL,
+ counterfactual_pre_action_value REAL
+);
+CREATE INDEX IF NOT EXISTS decision_measurements_decision ON decision_measurements(decision_id,policy);
+CREATE TRIGGER IF NOT EXISTS decision_measurements_freeze_preregistered
+ BEFORE UPDATE ON decision_measurements
+ WHEN NEW.decision_id<>OLD.decision_id OR NEW.created_at<>OLD.created_at OR NEW.instrument<>OLD.instrument
+   OR NEW.horizon<>OLD.horizon OR NEW.policy<>OLD.policy OR NEW.pre_action<>OLD.pre_action
+   OR NEW.hypotheses_json<>OLD.hypotheses_json OR NEW.sensor_id<>OLD.sensor_id
+   OR NEW.p_action_change<>OLD.p_action_change OR NEW.expected_loss_avoided<>OLD.expected_loss_avoided
+   OR NEW.measurement_cost<>OLD.measurement_cost OR NEW.latency_cost<>OLD.latency_cost
+   OR NEW.ignorance_bid<>OLD.ignorance_bid OR NEW.action_map_json<>OLD.action_map_json
+ BEGIN SELECT RAISE(ABORT,'preregistered measurement fields are immutable'); END;
+
+
+CREATE TABLE IF NOT EXISTS ignorance_states (
+ decision_id TEXT PRIMARY KEY,
+ created_at INTEGER NOT NULL,
+ instrument TEXT NOT NULL,
+ horizon TEXT NOT NULL,
+ state TEXT NOT NULL CHECK(state IN ('BREAKOUT','SPOT_PERP_CAUSE','JUMP','PRICE_DISCOVERY','QUIET')),
+ feature_schema_version TEXT NOT NULL,
+ pre_flow_features_json TEXT NOT NULL,
+ flow_observed_at INTEGER,
+ CHECK(flow_observed_at IS NULL OR flow_observed_at>=created_at)
+);
+CREATE TRIGGER IF NOT EXISTS ignorance_states_no_update
+ BEFORE UPDATE ON ignorance_states BEGIN
+  SELECT RAISE(ABORT,'ignorance state is immutable; append FLOW to decision_measurements instead');
+ END;
+CREATE TRIGGER IF NOT EXISTS ignorance_states_no_delete
+ BEFORE DELETE ON ignorance_states BEGIN SELECT RAISE(ABORT,'ignorance state is immutable'); END;
+
+-- D1 migration note: entry_price is added in deployment migration; fresh schema includes it below.
+CREATE TABLE IF NOT EXISTS cognition_outcomes(decision_id TEXT NOT NULL,horizon_minutes INTEGER NOT NULL CHECK(horizon_minutes IN (60,240)),due_at INTEGER NOT NULL,status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','evaluated','missing')),evaluated_at INTEGER,PRIMARY KEY(decision_id,horizon_minutes));
+CREATE INDEX IF NOT EXISTS cognition_outcomes_due ON cognition_outcomes(status,due_at);
+CREATE TABLE IF NOT EXISTS cognition_policy_outcomes(decision_id TEXT NOT NULL,horizon_minutes INTEGER NOT NULL,policy TEXT NOT NULL CHECK(policy IN ('ig','always','random')),exit_price REAL NOT NULL CHECK(exit_price>0),net_decision_value REAL NOT NULL,counterfactual_pre_action_value REAL NOT NULL,PRIMARY KEY(decision_id,horizon_minutes,policy));
