@@ -92,3 +92,18 @@ CREATE TABLE IF NOT EXISTS cognition_policy_outcomes(
  exit_price DOUBLE PRECISION NOT NULL CHECK(exit_price>0),net_decision_value DOUBLE PRECISION NOT NULL,
  counterfactual_pre_action_value DOUBLE PRECISION NOT NULL,
  PRIMARY KEY(decision_id,horizon_minutes,policy));
+
+
+-- VIRA self-observable runtime: append-only execution/error/settlement evidence.
+CREATE TABLE IF NOT EXISTS cognition_runtime_events(
+ event_id TEXT PRIMARY KEY,run_id TEXT NOT NULL,created_at BIGINT NOT NULL,
+ event_type TEXT NOT NULL CHECK(event_type IN ('heartbeat_start','decision_opened','settlement','error','heartbeat_end')),
+ decision_id TEXT,instrument TEXT,horizon_minutes INTEGER,
+ payload_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS cognition_runtime_events_run ON cognition_runtime_events(run_id,created_at);
+CREATE OR REPLACE FUNCTION deny_cognition_runtime_event_mutation() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN RAISE EXCEPTION 'cognition runtime events are immutable'; END $$;
+DROP TRIGGER IF EXISTS cognition_runtime_events_no_mutation ON cognition_runtime_events;
+CREATE TRIGGER cognition_runtime_events_no_mutation BEFORE UPDATE OR DELETE ON cognition_runtime_events
+ FOR EACH ROW EXECUTE FUNCTION deny_cognition_runtime_event_mutation();
