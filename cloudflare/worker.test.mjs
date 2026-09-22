@@ -63,7 +63,7 @@ test('shadow signal is immutable and receives forward outcomes only when due',as
     await run('cmc',env,start+15*minute);
 
     const decision=sql.prepare('SELECT direction,baseline_direction,entry_price,trigger_change_pct,round_trip_cost_bps,model_version FROM shadow_signals').get();
-    assert.deepEqual({...decision},{direction:1,baseline_direction:-1,entry_price:120,trigger_change_pct:20,round_trip_cost_bps:20,model_version:'momentum-v1'});
+    assert.deepEqual({...decision},{direction:1,baseline_direction:-1,entry_price:120,trigger_change_pct:20,round_trip_cost_bps:20,model_version:'vira-signal-runtime-v1'});
     assert.deepEqual(sql.prepare('SELECT horizon_minutes,status FROM shadow_outcomes ORDER BY horizon_minutes').all().map(row=>({...row})),[
       {horizon_minutes:15,status:'pending'},
       {horizon_minutes:60,status:'pending'},
