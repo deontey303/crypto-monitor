@@ -14,7 +14,7 @@ const emit=async(type,payload={},extra={})=>{
 };
 try{
   await emit('heartbeat_start',{deploymentId:process.env.RAILWAY_DEPLOYMENT_ID??null});
-  const opened=await runCycle({db});
+  const opened=await runCycle({db,onSettlement:async s=>emit('settlement',{evaluatedAt:s.evaluatedAt,exitPrice:s.exitPrice,policies:s.policies},{decisionId:s.decisionId,horizonMinutes:s.horizonMinutes})});
   for(const d of opened) await emit('decision_opened',{state:d.state,policies:d.policies,flowAcquired:d.flowAcquired},{decisionId:d.decisionId,instrument:d.decisionId.split(':')[1]});
   await emit('heartbeat_end',{ok:true,opened:opened.length});
 }catch(error){
