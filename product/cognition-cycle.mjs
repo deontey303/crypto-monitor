@@ -3,14 +3,17 @@ import {freezeIgnoranceState} from './ignorance-state-v0.mjs';
 import {binanceFlow} from './binance-flow.mjs';
 import {flowAction,makePolicies,scoreAction} from './flow-v0.mjs';
 const H=[60,240], MIN=60000;
-const j=async u=>{const r=await fetch(u,{signal:AbortSignal.timeout(10000)});if(!r.ok)throw new Error('market_'+r.status);return r.json();};
+const json=async u=>{const r=await fetch(u,{signal:AbortSignal.timeout(10000)});if(!r.ok)throw new Error('market_'+r.status);return r.json();};
 const avg=a=>a.reduce((x,y)=>x+y,0)/Math.max(1,a.length);
 function z(last,a){const m=avg(a),sd=Math.sqrt(avg(a.map(x=>(x-m)**2)))||1;return (last-m)/sd;}
+const spotKlines=s=>json('https://api.binance.com/api/v3/klines?symbol='+s+'&interval=5m&limit=30');
+async function optional(u,fallback){try{return await json(u);}catch{return fallback;}}
 export async function preFlowState(symbol){
- const [k,prem,oi]=await Promise.all([
-  j('https://fapi.binance.com/fapi/v1/klines?symbol='+symbol+'&interval=5m&limit=30'),
-  j('https://fapi.binance.com/fapi/v1/premiumIndex?symbol='+symbol),
-  j('https://fapi.binance.com/futures/data/openInterestHist?symbol='+symbol+'&period=5m&limit=30')
+ // PRICE is required; derivatives context is optional because some cloud regions receive HTTP 451 from Binance USD-M.
+ const k=await spotKlines(symbol);
+ const [prem,oi]=await Promise.all([
+  optional('https://fapi.binance.com/fapi/v1/premiumIndex?symbol='+symbol,null),
+  optional('https://fapi.binance.com/futures/data/openInterestHist?symbol='+symbol+'&period=5m&limit=30',[])
  ]);
  const closes=k.map(x=>Number(x[4])), rets=closes.slice(1).map((x,i)=>Math.log(x/closes[i]));
  const ranges=k.map(x=>(Number(x[2])-Number(x[3]))/Number(x[4])*10000);
@@ -20,7 +23,7 @@ export async function preFlowState(symbol){
   returnZ:z(rets.at(-1),rets.slice(0,-1)),realizedVolZ:z(ranges.at(-1),ranges.slice(0,-1)),
   distanceFromRangeBps:Math.min(Math.abs(last/hi-1),Math.abs(last/lo-1))*10000,
   breakoutBandBps:15,rangeCompression01:Math.max(0,Math.min(1,1-ranges.at(-1)/(avg(ranges.slice(-12,-1))||1))),
-  spotPerpBasisZ:Number(prem.lastFundingRate||0)*10000,
+  spotPerpBasisZ:prem?Number(prem.lastFundingRate||0)*10000:0,
   openInterestChangeZ:oiVals.length>2?z((oiVals.at(-1)/oiVals.at(-2)-1)*10000,oiVals.slice(1,-1).map((x,i)=>(x/oiVals[i]-1)*10000)):0,
   crossVenueDispersionBps:0,venueDispersionThresholdBps:8
  }};
@@ -34,18 +37,19 @@ export async function openDecision(db,symbol,now=Date.now(),randomUnit=Math.rand
   .bind(id,now,symbol,'1h/4h',frozen.state,frozen.featureSchemaVersion,JSON.stringify(frozen.features)).run();
  const policies=makePolicies({decisionId:id,ts:now,instrument:symbol,horizon:'1h/4h',preAction:'WAIT',
   hypotheses:['directional-flow-confirmation','flow-disagreement'],sensorBid:bidByState(frozen.state),randomUnit});
- // Acquire once if any policy requests it; policies that did not buy it are forbidden from using it.
- const need=policies.some(x=>x.acquire), flow=need?await binanceFlow(symbol):null, observed=flow?.observedAt??null;
+ let flow=null, observed=null;
+ const need=policies.some(x=>x.acquire);
+ if(need){try{flow=await binanceFlow(symbol);observed=flow?.observedAt??null;}catch(e){console.log(JSON.stringify({vira_event:'sensor_unavailable',sensor:'FLOW',symbol,error:String(e?.message??e)}));}}
  const actionMap=JSON.stringify({model:'flow-v0',long:'score>=0.20 & disagreement<0.35',short:'score<=-0.20 & disagreement<0.35',else:'WAIT'});
  for(const p of policies){
   const post=p.acquire&&flow?flowAction(flow):p.preAction, b=bidByState(frozen.state);
   await db.prepare(`INSERT INTO decision_measurements
    (measurement_id,decision_id,created_at,instrument,horizon,policy,pre_action,hypotheses_json,sensor_id,p_action_change,expected_loss_avoided,measurement_cost,latency_cost,ignorance_bid,action_map_json,observed_at,observed_value_json,post_action,entry_price)
    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-   .bind(id+':'+p.policy,id,now,symbol,'1h/4h',p.policy,p.preAction,JSON.stringify(p.hypotheses),'FLOW',b.pActionChange,b.expectedLossAvoided,b.measurementCost,b.latencyCost,p.ignoranceBid??(b.pActionChange*b.expectedLossAvoided-b.measurementCost-b.latencyCost),actionMap,p.acquire?observed:null,p.acquire?JSON.stringify(flow):null,post,base.price).run();
+   .bind(id+':'+p.policy,id,now,symbol,'1h/4h',p.policy,p.preAction,JSON.stringify(p.hypotheses),'FLOW',b.pActionChange,b.expectedLossAvoided,b.measurementCost,b.latencyCost,p.ignoranceBid??(b.pActionChange*b.expectedLossAvoided-b.measurementCost-b.latencyCost),actionMap,p.acquire?observed:null,p.acquire&&flow?JSON.stringify(flow):null,post,base.price).run();
  }
  for(const h of H) await db.prepare('INSERT INTO cognition_outcomes(decision_id,horizon_minutes,due_at,status) VALUES (?,?,?,?)').bind(id,h,now+h*MIN,'pending').run();
- return {decisionId:id,state:frozen.state,policies:policies.map(p=>({policy:p.policy,acquire:p.acquire})),flowAcquired:need};
+ return {decisionId:id,state:frozen.state,policies:policies.map(p=>({policy:p.policy,acquire:p.acquire})),flowAcquired:Boolean(flow)};
 }
 export async function settleDue(db,now=Date.now(),onSettlement=null){
  const due=await db.prepare("SELECT decision_id,horizon_minutes FROM cognition_outcomes WHERE status='pending' AND due_at<=?").bind(now).all();
@@ -53,7 +57,7 @@ export async function settleDue(db,now=Date.now(),onSettlement=null){
   const rows=(await db.prepare('SELECT policy,instrument,post_action,pre_action,entry_price,measurement_cost FROM decision_measurements WHERE decision_id=?').bind(o.decision_id).all()).results??[];
   if(!rows.length)continue;
   let price;
-  try{const x=await j('https://fapi.binance.com/fapi/v1/ticker/price?symbol='+rows[0].instrument);price=Number(x.price);}catch{continue;}
+  try{const x=await json('https://api.binance.com/api/v3/ticker/price?symbol='+rows[0].instrument);price=Number(x.price);}catch{continue;}
   for(const r of rows){
    const val=scoreAction(r.post_action,Number(r.entry_price),price,20)-Number(r.measurement_cost||0);
    const pre=scoreAction(r.pre_action,Number(r.entry_price),price,20);
