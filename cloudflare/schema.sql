@@ -132,3 +132,22 @@ CREATE TRIGGER IF NOT EXISTS decision_measurements_freeze_preregistered
    OR NEW.measurement_cost<>OLD.measurement_cost OR NEW.latency_cost<>OLD.latency_cost
    OR NEW.ignorance_bid<>OLD.ignorance_bid OR NEW.action_map_json<>OLD.action_map_json
  BEGIN SELECT RAISE(ABORT,'preregistered measurement fields are immutable'); END;
+
+
+CREATE TABLE IF NOT EXISTS ignorance_states (
+ decision_id TEXT PRIMARY KEY,
+ created_at INTEGER NOT NULL,
+ instrument TEXT NOT NULL,
+ horizon TEXT NOT NULL,
+ state TEXT NOT NULL CHECK(state IN ('BREAKOUT','SPOT_PERP_CAUSE','JUMP','PRICE_DISCOVERY','QUIET')),
+ feature_schema_version TEXT NOT NULL,
+ pre_flow_features_json TEXT NOT NULL,
+ flow_observed_at INTEGER,
+ CHECK(flow_observed_at IS NULL OR flow_observed_at>=created_at)
+);
+CREATE TRIGGER IF NOT EXISTS ignorance_states_no_update
+ BEFORE UPDATE ON ignorance_states BEGIN
+  SELECT RAISE(ABORT,'ignorance state is immutable; append FLOW to decision_measurements instead');
+ END;
+CREATE TRIGGER IF NOT EXISTS ignorance_states_no_delete
+ BEFORE DELETE ON ignorance_states BEGIN SELECT RAISE(ABORT,'ignorance state is immutable'); END;
