@@ -25,6 +25,8 @@ jobs:
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
         with:
           node-version: "24"
+      - name: Install dependencies
+        run: npm install --ignore-scripts --no-audit --no-fund
       - name: Verify ProofMarket primitives
         run: node --test product/*.test.mjs
       - name: Verify Cloudflare worker
