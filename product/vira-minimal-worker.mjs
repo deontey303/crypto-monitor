@@ -32,15 +32,19 @@ async function settle(db,now,p){
   await db.query('UPDATE vira_minimal_outcomes SET evaluated_at=$1,exit_price=$2,net_return_bps=$3 WHERE decision_id=$4 AND horizon_minutes=$5 AND evaluated_at IS NULL',[now,p,net,x.decision_id,x.horizon_minutes]);}
  return rows.length;
 }
+const checkpoint=(name,extra={})=>console.log(JSON.stringify({vira:'minimal-v0',checkpoint:name,at:new Date().toISOString(),...extra}));
 async function main(){
- const db=new Pool({connectionString:process.env.DATABASE_URL}); await schema(db);
+ const db=new Pool({connectionString:process.env.DATABASE_URL});
+ await db.query('SELECT 1'); checkpoint('DB_CONNECTED');
+ await schema(db); checkpoint('SCHEMA_READY');
  let prev=null; console.log(JSON.stringify({vira:'minimal-v0',status:'started'}));
  for(;;){const started=Date.now();
-  try{const p=await price(), now=new Date(); const d=decide(prev,p); const id='vira-'+crypto.randomUUID();
+  try{const p=await price(); checkpoint('PRICE_RECEIVED',{instrument:SYMBOL,price:p});
+   const now=new Date(); const d=decide(prev,p); const id='vira-'+crypto.randomUUID();
    await db.query('BEGIN');
    try{await db.query('INSERT INTO vira_minimal_decisions VALUES($1,$2,$3,$4,$5,$6)',[id,now,SYMBOL,d.evidence,d.action,p]);
     for(const h of HORIZONS)await db.query('INSERT INTO vira_minimal_outcomes(decision_id,horizon_minutes,due_at) VALUES($1,$2,$3)',[id,h,new Date(+now+h*60000)]);
-    await db.query('COMMIT');}catch(e){await db.query('ROLLBACK');throw e}
+    await db.query('COMMIT'); checkpoint('DECISION_WRITTEN',{decision_id:id,created_at:now.toISOString(),instrument:SYMBOL,action:d.action,entry_price:p});}catch(e){await db.query('ROLLBACK');throw e}
    const settled=await settle(db,now,p); prev=p;
    console.log(JSON.stringify({decision_id:id,created_at:now.toISOString(),instrument:SYMBOL,evidence:d.evidence,action:d.action,entry_price:p,settled}));
   }catch(e){console.error(JSON.stringify({vira:'minimal-v0',status:'error',reason:String(e.message||e)}))}
