@@ -37,3 +37,17 @@ CREATE OR REPLACE VIEW shadow_scorecard AS SELECT s.model_version,s.baseline_mod
  AVG(CASE WHEN o.net_return_bps>0 THEN 1.0 ELSE 0.0 END) FILTER (WHERE o.status='evaluated') AS model_hit_rate,
  AVG(CASE WHEN o.baseline_net_return_bps>0 THEN 1.0 ELSE 0.0 END) FILTER (WHERE o.status='evaluated') AS baseline_hit_rate
  FROM shadow_signals s JOIN shadow_outcomes o USING(signal_id) GROUP BY s.model_version,s.baseline_model_version,o.horizon_minutes;
+
+CREATE TABLE IF NOT EXISTS liquidity_response_measurements (
+ id BIGSERIAL PRIMARY KEY,
+ symbol TEXT NOT NULL,
+ measured_at BIGINT NOT NULL,
+ side TEXT NOT NULL CHECK(side IN ('buy','sell')),
+ price DOUBLE PRECISION NOT NULL CHECK(price>0),
+ removed_qty DOUBLE PRECISION NOT NULL CHECK(removed_qty>0),
+ replenished_qty DOUBLE PRECISION NOT NULL CHECK(replenished_qty>=0),
+ lr DOUBLE PRECISION NOT NULL CHECK(lr>=0),
+ regime TEXT NOT NULL CHECK(regime IN ('absorption','mixed','withdrawal')),
+ sensor_version TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS liquidity_response_recent ON liquidity_response_measurements(symbol,measured_at DESC);
