@@ -9,7 +9,8 @@
     "run:cmc": "node railway/runner.mjs cmc",
     "run:flow": "node product/run-flow.mjs",
     "run:cognition": "node product/run-cognition.mjs",
-    "run:vira-minimal": "node product/vira-minimal-worker.mjs"
+    "run:vira-minimal": "node product/vira-minimal-worker.mjs",
+    "run:agent": "node product/autonomous-agent.mjs"
   },
   "dependencies": {
     "pg": "^8.16.3"
