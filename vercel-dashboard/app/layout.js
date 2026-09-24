@@ -1,0 +1,1 @@
+import "./globals.css"; export const metadata={title:"Crypto Agent Live",description:"Production signal observability"}; export default function Layout({children}){return <html lang="en"><body>{children}</body></html>}
