@@ -1,0 +1,6 @@
+import test from 'node:test';import assert from 'node:assert/strict';import {canonicalStringify,eventHash,canonicalEvent,verifyCanonicalEvent} from './canonical-market-event.mjs';
+test('nested object key order is hash invariant',()=>{const a={z:{b:2,a:1},a:[{y:2,x:1}]};const b={a:[{x:1,y:2}],z:{a:1,b:2}};assert.equal(canonicalStringify(a),canonicalStringify(b));assert.equal(eventHash(a),eventHash(b))});
+test('payload mutation changes hash',()=>{assert.notEqual(eventHash({p:{v:'1'}}),eventHash({p:{v:'2'}}))});
+test('array order remains significant',()=>{assert.notEqual(eventHash({a:[1,2]}),eventHash({a:[2,1]}))});
+test('event verifies and tamper fails',()=>{const e=canonicalEvent({venue:'test',marketType:'spot',symbol:'BTC-USD',eventType:'trade',exchangeEventTime:1,ingestTime:2,payload:{price:'1',size:'2'},sourceEndpoint:'test'});assert.equal(verifyCanonicalEvent(e),true);assert.equal(verifyCanonicalEvent({...e,payload:{...e.payload,price:'9'}}),false)});
+test('previous hash is committed',()=>{const base={venue:'test',marketType:'spot',symbol:'BTC-USD',eventType:'trade',exchangeEventTime:1,ingestTime:2,payload:{price:'1'},sourceEndpoint:'test'};assert.notEqual(canonicalEvent({...base,previousHash:'a'}).event_hash,canonicalEvent({...base,previousHash:'b'}).event_hash)});
