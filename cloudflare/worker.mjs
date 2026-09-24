@@ -1,4 +1,5 @@
 // No credentials in this file. CMC_API_KEY is a Worker secret.
+// CLOUDFLARE_DEPLOY_TRIGGER_2026_09_24
 import watchlist from '../watchlist.json' with { type: 'json' };
 import { claimHash } from '../product/claim-hash.mjs';
 // PriceNet-linear-v1 frozen shadow expert. Artifact is imported as JSON so deployed bytes are immutable.
