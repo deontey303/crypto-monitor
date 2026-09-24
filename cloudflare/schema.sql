@@ -171,3 +171,18 @@ CREATE TRIGGER IF NOT EXISTS vira_runtime_events_no_update
  BEFORE UPDATE ON vira_runtime_events BEGIN SELECT RAISE(ABORT,'vira runtime events are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS vira_runtime_events_no_delete
  BEFORE DELETE ON vira_runtime_events BEGIN SELECT RAISE(ABORT,'vira runtime events are append-only'); END;
+
+
+-- PriceNet frozen prospective shadow ledger.
+CREATE TABLE IF NOT EXISTS pricenet_predictions (
+ prediction_id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, observed_bar_at INTEGER NOT NULL,
+ due_at INTEGER NOT NULL, entry_price REAL NOT NULL CHECK(entry_price>0), source TEXT NOT NULL,
+ model_version TEXT NOT NULL, training_run_id TEXT NOT NULL, feature_json TEXT NOT NULL,
+ p_up REAL NOT NULL, p_down REAL NOT NULL, p_range REAL NOT NULL, predicted_class TEXT NOT NULL CHECK(predicted_class IN ('UP','DOWN','RANGE')),
+ predicted_mfe_bps REAL, predicted_mae_bps REAL, status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','evaluated')),
+ evaluated_at INTEGER, exit_price REAL, realized_return_bps REAL, realized_class TEXT CHECK(realized_class IN ('UP','DOWN','RANGE'))
+);
+CREATE INDEX IF NOT EXISTS pricenet_due ON pricenet_predictions(status,due_at);
+CREATE TRIGGER IF NOT EXISTS pricenet_preregistered_immutable BEFORE UPDATE ON pricenet_predictions
+ WHEN NEW.prediction_id<>OLD.prediction_id OR NEW.created_at<>OLD.created_at OR NEW.observed_bar_at<>OLD.observed_bar_at OR NEW.due_at<>OLD.due_at OR NEW.entry_price<>OLD.entry_price OR NEW.source<>OLD.source OR NEW.model_version<>OLD.model_version OR NEW.training_run_id<>OLD.training_run_id OR NEW.feature_json<>OLD.feature_json OR NEW.p_up<>OLD.p_up OR NEW.p_down<>OLD.p_down OR NEW.p_range<>OLD.p_range OR NEW.predicted_class<>OLD.predicted_class OR NEW.predicted_mfe_bps<>OLD.predicted_mfe_bps OR NEW.predicted_mae_bps<>OLD.predicted_mae_bps
+ BEGIN SELECT RAISE(ABORT,'pricenet preregistration immutable'); END;
