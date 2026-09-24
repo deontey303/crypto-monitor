@@ -1,6 +1,60 @@
 // No credentials in this file. CMC_API_KEY is a Worker secret.
 import watchlist from '../watchlist.json' with { type: 'json' };
 import { claimHash } from '../product/claim-hash.mjs';
+// PriceNet-linear-v1 frozen shadow expert. Artifact is imported as JSON so deployed bytes are immutable.
+import priceNetArtifact from '../models/pricenet-linear-v1/model.json' with { type: 'json' };
+const PRICENET_EXPECTED_MODEL='PriceNet-linear-v1';
+const PRICENET_EXPECTED_RUN='PRICENET-1790234878089';
+function priceNetVerified(){
+  return priceNetArtifact?.model?.version===PRICENET_EXPECTED_MODEL &&
+    priceNetArtifact?.training?.runId===PRICENET_EXPECTED_RUN &&
+    Array.isArray(priceNetArtifact?.featureSchema) && priceNetArtifact.featureSchema.join(',')===
+      'logret_1h,logret_3h,logret_6h,logret_12h,return_sd_13,bar_range_over_close,log_volume_ratio_6h';
+}
+const dot=(a,b)=>a.reduce((s,x,i)=>s+x*b[i],0);
+const softmax=z=>{const m=Math.max(...z),e=z.map(x=>Math.exp(x-m)),s=e.reduce((a,b)=>a+b,0);return e.map(x=>x/s);};
+export function priceNetInfer(features){
+  if(!priceNetVerified()) throw new Error('pricenet_artifact_invalid');
+  const m=priceNetArtifact.model;
+  if(!Array.isArray(features)||features.length!==m.featureMean.length) throw new Error('pricenet_feature_invalid');
+  const x=features.map((v,i)=>(v-m.featureMean[i])/m.featureStd[i]);
+  const p=softmax(m.weights.map((row,k)=>m.bias[k]+dot(row,x)));
+  return {pUp:p[0],pDown:p[1],pRange:p[2],mfeBps:dot(m.mfeWeights,x),maeBps:dot(m.maeWeights,x)};
+}
+async function coinbase1h(){
+  const rows=await json('https://api.exchange.coinbase.com/products/BTC-USD/candles?granularity=3600');
+  return rows.map(r=>({t:r[0]*1000,low:Number(r[1]),high:Number(r[2]),open:Number(r[3]),close:Number(r[4]),volume:Number(r[5])})).sort((a,b)=>a.t-b.t);
+}
+function priceNetFeatures(b){
+  if(b.length<14) throw new Error('pricenet_insufficient_bars');
+  const c=b.map(x=>x.close), n=c.length-1, lr=k=>Math.log(c[n]/c[n-k]);
+  const rs=[]; for(let i=n-12;i<=n;i++) rs.push(Math.log(c[i]/c[i-1]));
+  const mean=rs.reduce((a,b)=>a+b,0)/rs.length;
+  const sd=Math.sqrt(rs.reduce((s,x)=>s+(x-mean)**2,0)/rs.length);
+  const vols=b.slice(-6).map(x=>x.volume), vm=vols.reduce((a,b)=>a+b,0)/vols.length;
+  return [lr(1),lr(3),lr(6),lr(12),sd,(b[n].high-b[n].low)/b[n].close,Math.log(b[n].volume/vm)];
+}
+async function collectPriceNet(env,now){
+  const bars=await coinbase1h(), last=bars.at(-1), features=priceNetFeatures(bars), pred=priceNetInfer(features);
+  const observedAt=last.t, id='pricenet:'+observedAt;
+  const klass=pred.pUp>=pred.pDown&&pred.pUp>=pred.pRange?'UP':pred.pDown>=pred.pRange?'DOWN':'RANGE';
+  await env.DB.prepare(`INSERT OR IGNORE INTO pricenet_predictions
+    (prediction_id,created_at,observed_bar_at,due_at,entry_price,source,model_version,training_run_id,feature_json,p_up,p_down,p_range,predicted_class,predicted_mfe_bps,predicted_mae_bps,status)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'pending')`).bind(id,now,observedAt,observedAt+4*60*MIN,last.close,'Coinbase BTC-USD 1h',PRICENET_EXPECTED_MODEL,PRICENET_EXPECTED_RUN,JSON.stringify(features),pred.pUp,pred.pDown,pred.pRange,klass,pred.mfeBps,pred.maeBps).run();
+  console.log(JSON.stringify({event:'PRICENET_ARTIFACT_VERIFIED',model:PRICENET_EXPECTED_MODEL,run:PRICENET_EXPECTED_RUN}));
+  console.log(JSON.stringify({event:'PRICENET_PREDICTION_WRITTEN',prediction_id:id,observed_bar_at:observedAt,due_at:observedAt+4*60*MIN,class:klass}));
+}
+async function settlePriceNet(env,now){
+  const q=await env.DB.prepare("SELECT prediction_id,due_at,entry_price FROM pricenet_predictions WHERE status='pending' AND due_at<=?").bind(now).all();
+  if(!(q.results??[]).length)return;
+  const bars=await coinbase1h();
+  for(const p of q.results??[]){const b=bars.find(x=>x.t>=p.due_at); if(!b)continue;
+    const ret=(b.close/p.entry_price-1)*10000, cls=ret>priceNetArtifact.model.thresholdBps?'UP':ret<-priceNetArtifact.model.thresholdBps?'DOWN':'RANGE';
+    await env.DB.prepare("UPDATE pricenet_predictions SET status='evaluated',evaluated_at=?,exit_price=?,realized_return_bps=?,realized_class=? WHERE prediction_id=? AND status='pending'").bind(now,b.close,ret,cls,p.prediction_id).run();
+    console.log(JSON.stringify({event:'PRICENET_4H_OUTCOME',prediction_id:p.prediction_id,realized_class:cls,return_bps:ret}));
+  }
+}
+
 const MIN = 60000;
 const positive = x => Number.isFinite(Number(x)) && Number(x) > 0;
 export function selectPair(pairs, token) {
@@ -217,6 +271,7 @@ export async function run(source, env, now) {
     ]);
     await runtimeEvent(env,now,'cycle_ok',{source,quotes:Object.keys(data).length,candidates:result.alerts.length});
     await deliverNotifications(env,now);
+    if(source==='cmc'){ await collectPriceNet(env,now); await settlePriceNet(env,now); }
     console.log(JSON.stringify({source,status:'ok',quotes:Object.keys(data).length,signals:result.alerts.length,version:VIRA_VERSION}));
   } catch (error) {
     // Never log provider bodies, headers, env or secret values.
@@ -233,6 +288,8 @@ export default {
   async fetch(request, env) {
     const url=new URL(request.url);
     if (request.method!=='GET') return new Response('Method not allowed',{status:405});
+    if(url.pathname==='/health') return Response.json({ok:true,pricenet:priceNetVerified(),model:PRICENET_EXPECTED_MODEL});
+    if(url.pathname==='/api/pricenet/latest'){ const p=await env.DB.prepare('SELECT * FROM pricenet_predictions ORDER BY created_at DESC LIMIT 1').first(); return Response.json({artifact_verified:priceNetVerified(),prediction:p??null}); }
     const match=url.pathname.match(/^\/proof\/([^/]+)$/);
     if (!match) return new Response('Not found',{status:404});
     const signalId=decodeURIComponent(match[1]);
