@@ -1,0 +1,5 @@
+import http from 'node:http';import {createDB} from '../railway/db.mjs';import {collectMarketState,ensureMarketStateSchema,persistMarketState} from './market-state-collector.mjs';
+const db=createDB();let last={ok:false,snapshot_id:null,raw_hash:null,error:null,at:null};
+async function tick(){try{await ensureMarketStateSchema(db);const s=await collectMarketState();const id=await persistMarketState(db,s);last={ok:true,snapshot_id:id,raw_hash:s.raw_hash,at:new Date().toISOString(),freshness:s.freshness};}catch(e){last={ok:false,error:String(e.message||e),at:new Date().toISOString()};console.error(JSON.stringify({checkpoint:'MARKET_STATE_ERROR',...last}));}}
+const port=+(process.env.PORT||3000);http.createServer((req,res)=>{res.setHeader('content-type','application/json');if(req.url==='/health')return res.end(JSON.stringify({ok:true,collector:last}));res.statusCode=404;res.end(JSON.stringify({error:'not_found'}));}).listen(port,()=>console.log(JSON.stringify({checkpoint:'MARKET_STATE_LISTENING',port})));
+await tick();setInterval(tick,+(process.env.MARKET_STATE_INTERVAL_MS||60000));
