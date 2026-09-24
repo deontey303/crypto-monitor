@@ -1,0 +1,1 @@
+import test from 'node:test';import assert from 'node:assert/strict';import {sha256} from './market-state-collector.mjs';test('snapshot hash deterministic',()=>assert.equal(sha256({a:1}),sha256({a:1})));test('snapshot hash changes with evidence',()=>assert.notEqual(sha256({a:1}),sha256({a:2})));
