@@ -10,7 +10,8 @@
     "run:flow": "node product/run-flow.mjs",
     "run:cognition": "node product/run-cognition.mjs",
     "run:vira-minimal": "node product/vira-minimal-worker.mjs",
-    "run:agent": "node product/autonomous-agent.mjs"
+    "run:agent": "node product/autonomous-agent.mjs",
+    "run:market-state": "node product/run-market-state.mjs"
   },
   "dependencies": {
     "pg": "^8.16.3"
