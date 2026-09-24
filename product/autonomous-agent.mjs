@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+// DEPLOY_TRIGGER_2026_09_24: force Railway source webhook after stale snapshot recovery.
 import http from 'node:http';
 import {createDB} from '../railway/db.mjs';
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
